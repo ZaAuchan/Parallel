@@ -1,0 +1,15 @@
+CC := g++
+CFLAGS := -std=c++17
+
+TARGET := sin
+
+ifdef DOUBLE_PRECISION
+CFLAGS += -DDOUBLE_PRECISION
+endif
+
+.PHONY: all
+
+all: $(TARGET)
+
+$(TARGET): main.cpp
+	$(CC) $(CFLAGS) -o $@ $^ -lm
