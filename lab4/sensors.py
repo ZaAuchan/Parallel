@@ -4,13 +4,11 @@ import time
 import cv2
 import logging
 import sys
-import queue
 
 logging.basicConfig(filename='app.log', level=logging.INFO)
-flag = True
 
 class Sensor:
-    def get(self):
+    def get(self, frame=None):
         raise NotImplementedError("Subclasses must implement method get()")
 
 class SensorX(Sensor):
@@ -20,7 +18,14 @@ class SensorX(Sensor):
         self._data = 0
 
     def get(self, frame=None) -> int:
-        time.sleep(self._delay)
+        time.sleep(self._delay)  # Симуляция задержки получения данных
+        self._data += 1
+        return self._data
+
+class FastSensorX(SensorX):
+    """Fast Sensor X"""
+    def get(self, frame=None) -> int:
+        # Уменьшение задержки для ускорения работы сенсора
         self._data += 1
         return self._data
 
@@ -49,7 +54,7 @@ class WindowImage:
         x = 50
         y = 50
         text1 = f"Sensor 1: {s1}"
-        text2 = f"Sensor 2: {s2}"
+        text2 = f"Sensor 2: {s2 // 10}"
         text3 = f"Sensor 3: {s3}"
         cv2.putText(img, text1, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         cv2.putText(img, text2, (x, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -59,19 +64,16 @@ class WindowImage:
     def close(self):
         cv2.destroyWindow("window")
 
-def process_sensor(que, sensor):
-    global flag
-    while flag:
-        frame = que.get()
-        new_sens = sensor.get(frame)
-        que.put(frame)  # Put the frame back after processing
+def process_sensor(sensor, interval, result_list, index, stop_event):
+    while not stop_event.is_set():
+        result_list[index] = sensor.get()
+        time.sleep(interval)
 
 def main(args):
-    global flag
     shapes = (int(args.res.split('*')[0]), int(args.res.split('*')[1]))
-    sensor1 = SensorX(1)
-    sensor2 = SensorX(0.1)
-    sensor3 = SensorX(0.01)
+    sensor1 = SensorX(1)                # Интервал 1 секунда
+    sensor2 = FastSensorX(0.1)          # Интервал 0.1 секунда, ускоренный сенсор
+    sensor3 = FastSensorX(0.01)         # Интервал 0.01 секунда
     window = WindowImage(args.freq)
     camera = SensorCam(args.cam, shapes)
 
@@ -82,41 +84,42 @@ def main(args):
         window.close()
         sys.exit()
 
-    frame_queue = queue.Queue(maxsize=1)
-    frame_queue.put(None)  # Initializing the queue with None
+    sensor_data = [0, 0, 0]  # Shared list to store sensor data
+    stop_event = threading.Event()
 
-    thread1 = threading.Thread(target=process_sensor, args=(frame_queue, sensor1))
-    thread2 = threading.Thread(target=process_sensor, args=(frame_queue, sensor2))
-    thread3 = threading.Thread(target=process_sensor, args=(frame_queue, sensor3))
+    thread1 = threading.Thread(target=process_sensor, args=(sensor1, 1, sensor_data, 0, stop_event))
+    thread2 = threading.Thread(target=process_sensor, args=(sensor2, 0.01, sensor_data, 1, stop_event))
+    thread3 = threading.Thread(target=process_sensor, args=(sensor3, 0.01, sensor_data, 2, stop_event))
 
     thread1.start()
     thread2.start()
     thread3.start()
 
-    while True:
-        frame, ret = camera.get()
-        if not ret or not camera.cap.isOpened() or not camera.cap.grab():
-            logging.info('The camera had turned off.')
-            print('The camera had turned off.')
-            camera.release()
-            window.close()
-            flag = False
-            sys.exit()
+    try:
+        while True:
+            start_time = time.time()
+            frame, ret = camera.get()
+            if not ret:
+                logging.info('The camera had turned off.')
+                print('The camera had turned off.')
+                break
 
-        frame_queue.put(frame)  # Put the frame in the queue for sensors to process
+            window.show(frame, sensor_data[0], sensor_data[1], sensor_data[2])
 
-        sensor1_data = sensor1.get(frame)
-        sensor2_data = sensor2.get(frame)
-        sensor3_data = sensor3.get(frame)
+            if cv2.waitKey(1) == ord('q'):
+                break
 
-        window.show(frame, sensor1_data, sensor2_data, sensor3_data)
-        time.sleep(1 / window.freq)
-
-        if cv2.waitKey(1) == ord('q'):
-            camera.release()
-            window.close()
-            flag = False
-            sys.exit()
+            # Ensure the loop runs at the specified frequency
+            elapsed_time = time.time() - start_time
+            sleep_time = max(1 / window.freq - elapsed_time, 0)
+            time.sleep(sleep_time)
+    finally:
+        stop_event.set()
+        camera.release()
+        window.close()
+        thread1.join()
+        thread2.join()
+        thread3.join()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
